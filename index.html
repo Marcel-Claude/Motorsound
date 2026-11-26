@@ -286,8 +286,8 @@ input[type=range]:disabled { opacity: 0.6; }
       </div>
     </div>
     <p class="hint"><b>V6, V8 und V10</b> werden live erzeugt: Jeder Zylinder zündet einzeln in der echten Zündreihenfolge, danach formt eine nachgebildete Auspuffanlage den Ton. Der V6 klingt rau und kernig, der V8 blubbert tief und unregelmäßig, der V10 klingt hell und kreischend.</p>
-    <p class="hint"><b>Turbo:</b> Das Pfeifen kommt mit etwas Verzögerung (Turboloch) und steigt mit dem Ladedruck. Beim Gaswegnehmen bläst das Schubumluftventil hörbar ab. <b>Kompressor:</b> Das Heulen hängt direkt an der Drehzahl und kommt sofort, ohne Verzögerung.</p>
-    <p class="hint">Pops und Bangs gibt es bei jedem Motor, jeweils mit eigenem Klang: beim Gaswegnehmen bei hoher Drehzahl und beim Hochschalten. Mit dem Schalter oben schaltest du sie ganz ab.</p>
+    <p class="hint"><b>Turbo:</b> Das Pfeifen kommt mit etwas Verzögerung (Turboloch) und steigt mit dem Ladedruck. Sobald der Ladedruck fällt, bläst das Ventil ab und der Lader flattert („tu-tu-tu“). <b>Kompressor:</b> Das Heulen hängt direkt an der Drehzahl und kommt sofort, ohne Verzögerung.</p>
+    <p class="hint">Pops und Bangs gibt es bei jedem Motor, jeweils mit eigenem Klang: beim Gaswegnehmen bei hoher Drehzahl und beim Hochschalten. Beim Bremsen knallt es dichter, beim Runterschalten (Drehzahl springt ohne Gas hoch) gibt es einen Bang mit einer ganzen Salve Pops. Mit dem Schalter oben schaltest du sie ganz ab.</p>
   </section>
 </main>
 
@@ -405,7 +405,7 @@ input[type=range]:disabled { opacity: 0.6; }
   }
   function popTone() { var e = ENGINES[engine] || ENGINES.v8; return e.pop; }
   var popCool = 0, popQueue = [];
-  var lastHighLoad = -1e9, overrunArmed = false, liftUntil = 0;
+  var lastHighLoad = -1e9, overrunArmed = false, liftUntil = 0, downCool = 0;
   function queuePopBurst(strength, count) {
     var tt = performance.now();
     for (var i = 0; i < count; i++) popQueue.push({ at: tt + i * (90 + Math.random() * 90), s: strength * (1 - i * 0.22) });
@@ -613,7 +613,7 @@ input[type=range]:disabled { opacity: 0.6; }
   }
 
   // ---- Aufladung: Turbo (Pfeifen mit Turboloch + Schubumluftventil) oder Kompressor (Heulen an der Drehzahl) ----
-  var chg = null, boost = 0, bovArmed = false, boostText = "";
+  var chg = null, boost = 0, bovArmed = false, boostText = "", loadHi = 0, whistleF = 950;
   function buildCharger() {
     var out = ctx.createGain(); out.gain.value = 1;
     out.connect(popOut);                      // wie die Pops hinter dem Kompressor, damit der Motor es nicht verschluckt
@@ -671,6 +671,38 @@ input[type=range]:disabled { opacity: 0.6; }
     c.start(t, (off + 0.5) % 1.2); c.stop(t + 0.3);
   }
 
+  function playFlutter(strength, f) {
+    // Turbo-Flattern ("tu-tu-tu-tu"): Die Luft staut sich am Verdichterrad und schlägt in immer langsameren,
+    // leiser werdenden Stößen zurück. Das Laderpfeifen stottert dabei mit und fällt in der Tonhöhe ab.
+    if (!ctx || !chg || strength < 0.05) return;
+    var t0 = ctx.currentTime + 0.03;
+    var n = 6 + Math.round(5 * Math.min(1, strength));        // 6 bis 11 Stöße
+    var s = ctx.createBufferSource(); s.buffer = chg.nbuf;
+    var bp = ctx.createBiquadFilter(); bp.type = "bandpass"; bp.Q.value = 1.3;
+    var g = ctx.createGain();
+    var o = ctx.createOscillator(); o.type = "triangle";
+    var og = ctx.createGain();
+    bp.frequency.setValueAtTime(1100, t0);
+    o.frequency.setValueAtTime(Math.max(300, f * 0.75), t0);
+    var t = t0, iv = 0.03, a = 1;
+    for (var k = 0; k < n; k++) {
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.linearRampToValueAtTime(2.2 * strength * a, t + 0.003);
+      g.gain.setTargetAtTime(0.0001, t + 0.004, iv * 0.28);
+      og.gain.setValueAtTime(0.0001, t);
+      og.gain.linearRampToValueAtTime(0.5 * strength * a, t + 0.003);
+      og.gain.setTargetAtTime(0.0001, t + 0.004, iv * 0.3);
+      t += iv; iv *= 1.13; a *= 0.84;
+    }
+    var end = t + 0.05;
+    bp.frequency.exponentialRampToValueAtTime(480, end);
+    o.frequency.exponentialRampToValueAtTime(Math.max(150, f * 0.3), end);
+    s.connect(bp); bp.connect(g); g.connect(chg.bus);
+    o.connect(og); og.connect(chg.bus);
+    s.start(t0, Math.random()); s.stop(end + 0.1);
+    o.start(t0); o.stop(end + 0.1);
+  }
+
   function updateCharger(t, dt, L) {
     if (!chg) return;
     var ca = +$("chargeAmt").value / 100, rpm = state.rpm, bar = 0;
@@ -679,14 +711,19 @@ input[type=range]:disabled { opacity: 0.6; }
     // Turbo: Ladedruck baut sich mit Verzögerung auf (Turboloch) und fällt schneller wieder ab
     var spool = turbo ? L * sstep((rpm - 1500) / 2600) : 0;
     boost += (spool - boost) * (1 - Math.exp(-dt * (spool > boost ? 2.2 : 5)));
+    // Höchster Gaswert der letzten Zeit (fällt langsam ab), um auch teilweises Gaswegnehmen zu erkennen
+    loadHi = Math.max(target.load, loadHi - dt * 1.2);
     if (target.load > 0.5) bovArmed = true;
-    if (turbo && bovArmed && target.load < 0.25 && boost > 0.25) {
+    if (turbo && bovArmed && boost > 0.25 && (target.load < 0.25 || loadHi - target.load > 0.45)) {
       bovArmed = false;
-      playBOV(boost * ca);
+      playBOV(boost * ca * 0.6);
+      playFlutter(boost * ca, whistleF);
       boost *= 0.2;                               // Druck ist abgeblasen
+      loadHi = target.load;
     }
     if (turbo) {
       var f = 950 + 2900 * boost * (0.6 + 0.4 * Math.min(1, rpm / 6500));   // etwa 1 bis 3,9 kHz
+      whistleF = f;
       chg.w1.frequency.setTargetAtTime(f, t, 0.03);
       chg.w0.frequency.setTargetAtTime(f / 2, t, 0.03);
       chg.w2.frequency.setTargetAtTime(f * 2, t, 0.03);
@@ -760,8 +797,13 @@ input[type=range]:disabled { opacity: 0.6; }
       rpm = a + (b - a) * Math.pow(p, 0.85);
       load = (p < 0.07 && g > 0) ? 0.05 : 1.0;
     } else if (t < 15) {
-      var q = (t - 12) / 3;
-      rpm = 6400 - (6400 - 1000) * Math.pow(q, 0.6);
+      // Bremsen mit zweimal Runterschalten: Gas bleibt weg, die Drehzahl springt beim Schalten kurz hoch
+      var u = t - 12;
+      if (u < 1.0) rpm = 6400 - 2400 * u;                          // 6400 -> 4000
+      else if (u < 1.12) rpm = 4000 + 1200 * (u - 1.0) / 0.12;     // runterschalten -> 5200
+      else if (u < 2.0) rpm = 5200 - 1800 * (u - 1.12) / 0.88;     // -> 3400
+      else if (u < 2.12) rpm = 3400 + 900 * (u - 2.0) / 0.12;      // runterschalten -> 4300
+      else rpm = 4300 - 3300 * (u - 2.12) / 0.88;                  // -> 1000
       load = 0;
     } else {
       rpm = 1000 - 200 * (t - 15);
@@ -809,11 +851,29 @@ input[type=range]:disabled { opacity: 0.6; }
       liftUntil = now + 2500;
       queuePopBurst(0.5 + 0.5 * Math.min(1, (state.rpm - 2500) / 4000), 2 + Math.floor(Math.random() * 3));
     }
-    // Schubknistern: solange nach dem Gaswegnehmen kein Gas gegeben wird, knallt es noch eine Weile unregelmäßig
+    // Drehzahländerung der letzten ~0,35 s in U/min pro Sekunde
+    var hspan = now - rpmHist[0][0];
+    var slope = hspan > 60 ? (state.rpm - rpmHist[0][1]) / hspan * 1000 : 0;
+    // Bremsen: Drehzahl fällt deutlich, ohne Gas -> Knistern läuft weiter, solange gebremst wird
+    var braking = target.load < 0.2 && slope < -700 && state.rpm > 1800;
     if (target.load >= 0.2) liftUntil = 0;
+    else if (braking) liftUntil = Math.max(liftUntil, now + 700);
+    // Runterschalten: Drehzahl springt ohne Gas nach oben (Zwischengas) -> kräftiger Bang und eine Pop-Salve
+    if (running && popsOn && now > downCool && target.load < 0.3 && slope > 1800 && state.rpm > 2200) {
+      downCool = now + 700;
+      liftUntil = Math.max(liftUntil, now + 1500);
+      playBang(0.8 + 0.2 * Math.random());
+      queuePopBurst(0.9, 4 + Math.floor(Math.random() * 3));
+    }
+    // Schubknistern: nach dem Gaswegnehmen knallt es unregelmäßig weiter, beim Bremsen deutlich dichter und mit Bangs
     if (running && popsOn && now < liftUntil && state.rpm > 1800 && !popQueue.length) {
       var rate = (2 + 6 * Math.min(1, (state.rpm - 1800) / 4500)) * popTone().rate;
-      if (Math.random() < rate * dt) playPop(0.45 + Math.random() * 0.5);
+      if (braking) rate = (5 + 7 * Math.min(1, (state.rpm - 1800) / 4500)) * popTone().rate * 1.7;   // Bremsen: deutlich dichter
+      if (Math.random() < rate * dt) {
+        if (braking && Math.random() < 0.22) playBang(0.6 + Math.random() * 0.35);
+        else if (braking) playPop(0.6 + Math.random() * 0.4);
+        else playPop(0.45 + Math.random() * 0.5);
+      }
     }
     prevLoad = target.load;
     updateSamples(dt);

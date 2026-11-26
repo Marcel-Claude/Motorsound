@@ -743,7 +743,8 @@ var EMBED = {clips:[["b",63.8,"UklGRnzeAABXQVZFZm10IBAAAAABAAEA4FsAAMC3AAACABAAZ
   }
 
   function demoStep(now) {
-    var t = ((now - demo.t0) / 1000) % 16;
+    // Der erste Frame kann einen etwas früheren Zeitstempel als der Klick haben: nie negativ werden lassen
+    var t = (Math.max(0, now - demo.t0) / 1000) % 16;
     var rpm, load;
     if (t < 12) {
       var g = Math.floor(t / 4), p = (t % 4) / 4;
@@ -764,14 +765,20 @@ var EMBED = {clips:[["b",63.8,"UklGRnzeAABXQVZFZm10IBAAAAABAAEA4FsAAMC3AAACABAAZ
 
   var last = performance.now();
   function frame(now) {
-    var dt = Math.min(0.1, (now - last) / 1000);
+    // Zuerst den nächsten Frame anmelden, damit ein einzelner Fehler nie die ganze Schleife (und den Ton) stoppt
+    requestAnimationFrame(frame);
+    var dt = Math.max(0, Math.min(0.1, (now - last) / 1000));
     last = now;
     if (demo) demoStep(now);
     else if (obd.active) obdStep(now);
     else if (cam.drive) camStep2(now);
+    if (!isFinite(target.rpm)) target.rpm = 800;
+    if (!isFinite(target.load)) target.load = 0.1;
     state.rpm += (target.rpm - state.rpm) * (1 - Math.exp(-dt * (obd.active ? 18 : cam.drive ? 14 : 10)));
     var lk = target.load > state.load ? 6 : 14;
     state.load += (target.load - state.load) * (1 - Math.exp(-dt * lk));
+    if (!isFinite(state.rpm)) state.rpm = target.rpm;
+    if (!isFinite(state.load)) state.load = target.load;
     rpmHist.push([now, state.rpm]);
     while (rpmHist.length > 2 && now - rpmHist[1][0] > 350) rpmHist.shift();
     duck += (1 - duck) * (1 - Math.exp(-dt * 6));
@@ -793,7 +800,6 @@ var EMBED = {clips:[["b",63.8,"UklGRnzeAABXQVZFZm10IBAAAAABAAEA4FsAAMC3AAACABAAZ
     prevLoad = target.load;
     updateSamples(dt);
     updateUI();
-    requestAnimationFrame(frame);
   }
 
   function stopDemo() {

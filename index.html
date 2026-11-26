@@ -140,13 +140,23 @@ select { min-width: 0; width: 100%; max-width: 100%; }
 .camMsg { position: absolute; left: 8px; bottom: 8px; right: 8px; color: #fff; background: rgba(0,0,0,.55); font-size: 14px; padding: 4px 8px; border-radius: 8px; }
 .camVid { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
 nav.tabs button { padding: 0 4px; }
+
+/* Motorwahl und Schalter im Bereich Klang */
+.lbl { display: block; font-weight: 600; margin-bottom: 4px; }
+.seg { gap: 6px; }
+.seg button { padding: 0 6px; min-width: 0; }
+.seg button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.opts label.switch { font-weight: 600; min-height: 44px; cursor: pointer; }
+button:disabled { opacity: 0.45; cursor: default; }
+input[type=range]:disabled { opacity: 0.6; }
+#engineNote:empty { display: none; }
 </style>
 </head>
 <body>
 <main>
   <header class="top">
     <h1 id="title">Motorsound</h1>
-    <span class="tag">nur Aufnahmen</span>
+    <span class="tag" id="soundTag">Aufnahme</span>
   </header>
 
   <section id="view-fahren" class="view active" aria-label="Fahren">
@@ -233,11 +243,21 @@ nav.tabs button { padding: 0 4px; }
   <section id="view-klang" class="view" aria-label="Klang">
     <h2>Klang</h2>
     <div class="controls">
+      <div role="group" aria-labelledby="engineLbl">
+        <span class="lbl" id="engineLbl">Motor</span>
+        <div class="row seg" id="engineSel">
+          <button type="button" data-engine="rec" aria-pressed="true">Aufnahme</button>
+          <button type="button" data-engine="v8" aria-pressed="false">V8</button>
+          <button type="button" data-engine="v10" aria-pressed="false">V10</button>
+          <button type="button" data-engine="v12" aria-pressed="false">V12</button>
+        </div>
+        <div class="hint" id="engineNote" style="margin-top:6px" aria-live="polite"></div>
+      </div>
       <div>
         <label for="sampleGain">Pegel</label>
         <input id="sampleGain" type="range" min="40" max="300" step="5" value="150">
       </div>
-      <div>
+      <div id="spreadWrap">
         <label for="spread">Tonhöhe bei hoher Drehzahl</label>
         <input id="spread" type="range" min="35" max="100" step="1" value="45">
       </div>
@@ -245,8 +265,11 @@ nav.tabs button { padding: 0 4px; }
         <label for="lively">Lebendigkeit (Unruhe und Schwanken)</label>
         <input id="lively" type="range" min="0" max="100" step="5" value="70">
       </div>
-      <div>
-        <label for="popAmt">Pops &amp; Bangs</label>
+      <div class="opts">
+        <label class="switch" for="popOn"><input id="popOn" type="checkbox" checked> Pops &amp; Bangs an</label>
+      </div>
+      <div id="popAmtWrap">
+        <label for="popAmt">Lautstärke Pops &amp; Bangs</label>
         <input id="popAmt" type="range" min="0" max="100" step="5" value="75">
       </div>
       <div class="opts">
@@ -256,8 +279,8 @@ nav.tabs button { padding: 0 4px; }
         <div class="hint" id="bangStatus" style="margin-top:8px">Klänge sind eingebaut. Tippe auf „Sound starten“.</div>
       </div>
     </div>
-    <p class="hint">Der Motorklang stammt ausschließlich aus deinem Video und läuft nur im Körner-Profil: kurze, überlappende Ausschnitte statt einer festen Dauerschleife, damit sich bei gehaltener Drehzahl nichts wiederholt anhört. Der Klang ist zusätzlich dunkler und basslastiger abgestimmt. Der Regler „Tonhöhe bei hoher Drehzahl“ legt fest, wie schnell der Ton mit der Drehzahl steigt.</p>
-    <p class="hint">Pops und Bangs sind synthetisch erzeugt, nicht aus dem Video, weil dort keine Knaller vorkommen: beim schnellen Gaswegnehmen bei hoher Drehzahl (Überrun) und beim Hochschalten. „Pops &amp; Bangs“ regelt die Lautstärke, bei 0 % sind sie aus.</p>
+    <p class="hint"><b>Aufnahme</b> ist der Motorklang aus deinem Video, abgespielt als kurze, überlappende Ausschnitte, damit sich bei gehaltener Drehzahl nichts wiederholt. <b>V8, V10 und V12</b> werden live erzeugt: Jeder Zylinder zündet einzeln in der echten Zündreihenfolge, danach formt eine nachgebildete Auspuffanlage den Ton. Der V8 blubbert unregelmäßig, der V10 klingt hell und kreischend, der V12 glatt und hoch.</p>
+    <p class="hint">Pops und Bangs sind synthetisch: beim schnellen Gaswegnehmen bei hoher Drehzahl (Überrun) und beim Hochschalten. Mit dem Schalter oben schaltest du sie ganz ab.</p>
   </section>
 </main>
 
@@ -322,6 +345,7 @@ var EMBED = {clips:[["b",63.8,"UklGRnzeAABXQVZFZm10IBAAAAABAAEA4FsAAMC3AAACABAAZ
     tone.connect(bass);
     bass.connect(master);
     buildPopChain();
+    buildSynth();
   }
 
   // ---- Synthetische Pops und Bangs (gezielt gewünscht, da das Video selbst keine enthält) ----
@@ -358,7 +382,7 @@ var EMBED = {clips:[["b",63.8,"UklGRnzeAABXQVZFZm10IBAAAAABAAEA4FsAAMC3AAACABAAZ
     o.start(t); o.stop(t + dur + 0.02);
   }
   function playPop(strength) {
-    if (!ctx) return;
+    if (!ctx || !popsOn) return;
     var t = ctx.currentTime, amt = +$("popAmt").value / 100;
     if (amt <= 0.01) return;
     strength *= amt;
@@ -367,7 +391,7 @@ var EMBED = {clips:[["b",63.8,"UklGRnzeAABXQVZFZm10IBAAAAABAAEA4FsAAMC3AAACABAAZ
     if (Math.random() < 0.5) crackle(t + 0.05 + Math.random() * 0.05, 0.25 * strength, 0.12, 2000, 4200);
   }
   function playBang(strength) {
-    if (!ctx) return;
+    if (!ctx || !popsOn) return;
     var t = ctx.currentTime, amt = +$("popAmt").value / 100;
     if (amt <= 0.01) return;
     strength *= amt;
@@ -386,6 +410,166 @@ var EMBED = {clips:[["b",63.8,"UklGRnzeAABXQVZFZm10IBAAAAABAAEA4FsAAMC3AAACABAAZ
       var p = popQueue.shift();
       playPop(Math.max(0.15, p.s));
     }
+  }
+
+  // ---- Synthetische Motoren (V8, V10, V12): Zündimpulse je Zylinder + Auspuffresonanz ----
+  // Jeder Zylinder zündet als kurzer Druckimpuls in der echten Zündreihenfolge. Die Bänke haben
+  // leicht verschiedene Rohrlängen; beim V8 (Cross-Plane) ergibt das das typische unregelmäßige Blubbern.
+  var ENGINES = {
+    v8: {
+      name: "V8", cyl: 8, banks: [0, 1, 1, 0, 1, 0, 0, 1], bankDelay: 0.0011,
+      amps: [1, 0.84, 0.95, 0.8, 1, 0.9, 0.86, 0.97], tau: 3.4, noise: 0.18,
+      lpBase: 380, lpLoad: 900, lpRpm: 0.13, drive: 2.2,
+      pk1: [95, 6], pk2: [310, 3], pipe: 6.5, fb: 0.32, gain: 0.75
+    },
+    v10: {
+      name: "V10", cyl: 10, banks: [0, 1, 0, 1, 0, 1, 0, 1, 0, 1], bankDelay: 0.0004,
+      amps: [1, 0.93, 0.97, 0.9, 1, 0.95, 0.92, 0.98, 0.96, 0.94], tau: 2.3, noise: 0.22,
+      lpBase: 750, lpLoad: 1300, lpRpm: 0.3, drive: 2.6,
+      pk1: [170, 4], pk2: [720, 5], pipe: 4.2, fb: 0.3, gain: 0.7
+    },
+    v12: {
+      name: "V12", cyl: 12, banks: [0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1], bankDelay: 0.0002,
+      amps: [1, 0.98, 0.97, 0.99, 0.96, 1, 0.98, 0.97, 1, 0.99, 0.97, 0.98], tau: 1.9, noise: 0.13,
+      lpBase: 950, lpLoad: 1500, lpRpm: 0.38, drive: 1.8,
+      pk1: [210, 3], pk2: [980, 5], pipe: 3, fb: 0.24, gain: 0.95
+    }
+  };
+  var ENGINE_KEY = "motorsound.engine", POPS_KEY = "motorsound.pops";
+  var engine = "rec", popsOn = true;
+  try {
+    var se = localStorage.getItem(ENGINE_KEY);
+    if (se === "rec" || ENGINES[se]) engine = se;
+    popsOn = localStorage.getItem(POPS_KEY) !== "0";
+  } catch (e) {}
+
+  var SYNTH_SRC = [
+    "class EngineProc extends AudioWorkletProcessor {",
+    "  static get parameterDescriptors() { return [",
+    "    { name: 'rpm', defaultValue: 800, minValue: 0, maxValue: 12000, automationRate: 'k-rate' },",
+    "    { name: 'load', defaultValue: 0.1, minValue: 0, maxValue: 1, automationRate: 'k-rate' },",
+    "    { name: 'rough', defaultValue: 0.5, minValue: 0, maxValue: 1, automationRate: 'k-rate' }",
+    "  ]; }",
+    "  constructor() {",
+    "    super();",
+    "    this.cfg = null; this.ph = 0; this.idx = 0; this.nextAt = 0; this.n = 0;",
+    "    this.s1 = 0; this.s2 = 0; this.ne = 0; this.q = [];",
+    "    this.port.onmessage = (e) => { this.cfg = e.data; this.idx = 0; this.ph = 0; this.nextAt = 0; this.q = []; };",
+    "  }",
+    "  process(ins, outs, p) {",
+    "    const out = outs[0][0], c = this.cfg;",
+    "    if (!c) { out.fill(0); return true; }",
+    "    const rpm = Math.max(200, p.rpm[0]), load = p.load[0], rough = p.rough[0];",
+    "    const N = c.cyl, sr = sampleRate, inc = rpm / 120 / sr;",
+    "    const tauS = (c.tau / 1000) * (0.55 + 0.45 * Math.min(1, 900 / rpm));",
+    "    const a1 = Math.exp(-1 / (sr * 0.00035)), a2 = Math.exp(-1 / (sr * tauS)), an = Math.exp(-1 / (sr * tauS * 0.8));",
+    "    const jit = rough * (0.09 * Math.max(0, 1 - rpm / 4500) + 0.012);",
+    "    const ampBase = 0.5 + 0.5 * load, nz = c.noise * (0.35 + 0.9 * load);",
+    "    const q = this.q;",
+    "    for (let i = 0; i < out.length; i++) {",
+    "      this.ph += inc;",
+    "      while (this.ph >= this.nextAt) {",
+    "        const k = this.idx;",
+    "        const a = c.amps[k] * ampBase * (1 + rough * 0.22 * (Math.random() * 2 - 1));",
+    "        q.push({ t: this.n + Math.round(c.banks[k] * c.bankDelay * sr), a: a });",
+    "        this.idx++;",
+    "        if (this.idx >= N) { this.idx = 0; this.ph -= 1; }",
+    "        const at = this.idx / N + (Math.random() - 0.5) * jit / N;",
+    "        this.nextAt = Math.max(at, this.ph + 1e-6);",
+    "      }",
+    "      let x = 0;",
+    "      for (let j = q.length - 1; j >= 0; j--) { if (q[j].t <= this.n) { x += q[j].a; q.splice(j, 1); } }",
+    "      this.s1 = this.s1 * a1 + x; this.s2 = this.s2 * a2 + x; this.ne = this.ne * an + x;",
+    "      out[i] = (this.s2 - this.s1) * 0.9 + (Math.random() * 2 - 1) * this.ne * nz;",
+    "      this.n++;",
+    "    }",
+    "    return true;",
+    "  }",
+    "}",
+    "registerProcessor('engine-proc', EngineProc);"
+  ].join("\n");
+
+  var synth = null;
+  function buildSynth() {
+    if (synth || !ctx) return;
+    synth = { ready: false, failed: false };
+    if (!ctx.audioWorklet || !window.AudioWorkletNode) { synth.failed = true; return; }
+    var bus = ctx.createGain(); bus.gain.value = 0; bus.connect(master);
+    synth.bus = bus;
+    var url = URL.createObjectURL(new Blob([SYNTH_SRC], { type: "application/javascript" }));
+    ctx.audioWorklet.addModule(url).then(function () {
+      var node = new AudioWorkletNode(ctx, "engine-proc", { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [1] });
+      var hp = ctx.createBiquadFilter(); hp.type = "highpass"; hp.frequency.value = 28; hp.Q.value = 0.7;
+      var pre = ctx.createGain(); pre.gain.value = 2;
+      var shaper = ctx.createWaveShaper();
+      var curve = new Float32Array(1024);
+      for (var i = 0; i < 1024; i++) { var v = i / 511.5 - 1; curve[i] = Math.tanh(v * 2.5) / Math.tanh(2.5); }
+      shaper.curve = curve; shaper.oversample = "2x";
+      var lp = ctx.createBiquadFilter(); lp.type = "lowpass"; lp.frequency.value = 900; lp.Q.value = 0.8;
+      var pk1 = ctx.createBiquadFilter(); pk1.type = "peaking"; pk1.Q.value = 1.4;
+      var pk2 = ctx.createBiquadFilter(); pk2.type = "peaking"; pk2.Q.value = 1.6;
+      var dly = ctx.createDelay(0.05), fb = ctx.createGain();
+      node.connect(hp); hp.connect(pre); pre.connect(shaper); shaper.connect(lp);
+      lp.connect(pk1); pk1.connect(pk2);
+      pk2.connect(bus);                                   // direkter Klang
+      pk2.connect(dly); dly.connect(fb); fb.connect(dly); fb.connect(bus);  // Rohrresonanz
+      synth.node = node; synth.pre = pre; synth.lp = lp; synth.pk1 = pk1; synth.pk2 = pk2;
+      synth.dly = dly; synth.fb = fb; synth.ready = true;
+      applyEngine();
+    }).catch(function () {
+      synth.failed = true;
+      applyEngine();
+    });
+  }
+
+  function applyEngine() {
+    var btns = document.querySelectorAll("#engineSel button");
+    for (var i = 0; i < btns.length; i++) btns[i].setAttribute("aria-pressed", btns[i].getAttribute("data-engine") === engine ? "true" : "false");
+    var e = ENGINES[engine];
+    $("soundTag").textContent = e ? e.name + " (synthetisch)" : "Aufnahme";
+    $("spreadWrap").hidden = !!e;
+    $("engineNote").textContent = e && synth && synth.failed
+      ? "Dieser Browser kann die synthetischen Motoren nicht erzeugen. Es läuft die Aufnahme."
+      : "";
+    if (!e || !synth || !synth.ready) return;
+    synth.node.port.postMessage({ cyl: e.cyl, banks: e.banks, bankDelay: e.bankDelay, amps: e.amps, tau: e.tau, noise: e.noise });
+    var t = ctx.currentTime;
+    synth.pk1.frequency.setValueAtTime(e.pk1[0], t); synth.pk1.gain.setValueAtTime(e.pk1[1], t);
+    synth.pk2.frequency.setValueAtTime(e.pk2[0], t); synth.pk2.gain.setValueAtTime(e.pk2[1], t);
+    synth.dly.delayTime.setValueAtTime(e.pipe / 1000, t);
+    synth.fb.gain.setValueAtTime(e.fb, t);
+  }
+
+  function setEngine(name) {
+    engine = name;
+    try { localStorage.setItem(ENGINE_KEY, name); } catch (e) {}
+    applyEngine();
+  }
+
+  function applyPops() {
+    $("popOn").checked = popsOn;
+    $("popAmt").disabled = !popsOn;
+    $("popTest").disabled = !popsOn;
+    $("popAmtWrap").style.opacity = popsOn ? "" : "0.45";
+    if (!popsOn) popQueue.length = 0;
+  }
+
+  function updateSynth(t, L, wb) {
+    var e = ENGINES[engine];
+    var useSynth = e && synth && synth.ready;
+    if (synth && synth.bus) synth.bus.gain.setTargetAtTime(0, t, 0.08);
+    if (!useSynth) return false;
+    var rpm = Math.max(300, state.rpm * wb.pm);
+    var P = synth.node.parameters;
+    P.get("rpm").setTargetAtTime(rpm, t, 0.015);
+    P.get("load").setTargetAtTime(L, t, 0.03);
+    P.get("rough").setValueAtTime(+$("lively").value / 100, t);
+    synth.lp.frequency.setTargetAtTime(Math.min(9000, e.lpBase + e.lpLoad * L + e.lpRpm * rpm), t, 0.05);
+    synth.pre.gain.setTargetAtTime(e.drive * (0.6 + 0.8 * L), t, 0.05);
+    var lvl = (+$("sampleGain").value / 150) * e.gain * duck * wb.am * (0.8 + 0.2 * L);
+    synth.bus.gain.cancelScheduledValues(t);
+    synth.bus.gain.setTargetAtTime(lvl, t, 0.05);
+    return true;
   }
 
   function ensureRunning() {
@@ -517,9 +701,19 @@ var EMBED = {clips:[["b",63.8,"UklGRnzeAABXQVZFZm10IBAAAAABAAEA4FsAAMC3AAACABAAZ
     return { pm: 1 + wob.p * 0.006 * amt, am: 1 + wob.a * 0.10 * amt };
   }
   function updateSamples(dt) {
-    if (!running || !ctx || !(banks.a.length + banks.b.length)) return;
+    if (!running || !ctx) return;
     var t = ctx.currentTime, L = state.load;
     var wb = wobble(dt || 0.016, +$("lively").value / 100);
+    runPopQueue(performance.now());
+    if (updateSynth(t, L, wb)) {
+      // Synth-Motor läuft: Aufnahme stumm schalten und keine Körner mehr planen
+      sampleBus.gain.setTargetAtTime(0, t, 0.06);
+      var s0 = soundS(state.rpm);
+      updateBank(banks.a, s0, 0, t);
+      updateBank(banks.b, s0, 0, t);
+      return;
+    }
+    if (!(banks.a.length + banks.b.length)) return;
     var s = soundS(state.rpm) * wb.pm;
     // Bank a (unter Last) von 96 Hz aufwärts, Bank b (Leerlauf, Gas weg) bis 119 Hz
     var a0 = sstep((L - 0.15) / 0.6), b0 = 1 - a0;
@@ -533,7 +727,6 @@ var EMBED = {clips:[["b",63.8,"UklGRnzeAABXQVZFZm10IBAAAAABAAEA4FsAAMC3AAACABAAZ
     sampleBus.gain.setTargetAtTime(lvl, t, 0.06);
     updateBank(banks.a, s, a, t);
     updateBank(banks.b, s, b, t);
-    runPopQueue(performance.now());
   }
 
   function updateUI() {
@@ -847,6 +1040,19 @@ var EMBED = {clips:[["b",63.8,"UklGRnzeAABXQVZFZm10IBAAAAABAAEA4FsAAMC3AAACABAAZ
   $("vol").addEventListener("input", function (e) {
     if (master) master.gain.setTargetAtTime(+e.target.value / 100, ctx.currentTime, 0.02);
   });
+  (function () {
+    var btns = document.querySelectorAll("#engineSel button");
+    for (var i = 0; i < btns.length; i++) {
+      btns[i].addEventListener("click", function (e) { setEngine(e.currentTarget.getAttribute("data-engine")); });
+    }
+  })();
+  $("popOn").addEventListener("change", function (e) {
+    popsOn = e.target.checked;
+    try { localStorage.setItem(POPS_KEY, popsOn ? "1" : "0"); } catch (err) {}
+    applyPops();
+  });
+  applyEngine();
+  applyPops();
   $("popTest").addEventListener("click", function () {
     ensureRunning().then(function () {
       playBang(0.9);

@@ -330,7 +330,15 @@ var EMBED = {clips:[["b",63.8,"UklGRnzeAABXQVZFZm10IBAAAAABAAEA4FsAAMC3AAACABAAZ
     comp.threshold.value = -14;
     comp.ratio.value = 6;
     master.connect(comp);
-    comp.connect(ctx.destination);
+    // Nach dem Kompressor: Pops kommen hier dazu, damit der Motor sie nicht wegdrückt.
+    // Ein Limiter ganz am Ende verhindert Übersteuern.
+    outBus = ctx.createGain();
+    var limiter = ctx.createDynamicsCompressor();
+    limiter.threshold.value = -2; limiter.knee.value = 0; limiter.ratio.value = 20;
+    limiter.attack.value = 0.002; limiter.release.value = 0.12;
+    comp.connect(outBus);
+    outBus.connect(limiter);
+    limiter.connect(ctx.destination);
     sampleBus = ctx.createGain();
     sampleBus.gain.value = 0;
     tone = ctx.createBiquadFilter();
@@ -349,12 +357,13 @@ var EMBED = {clips:[["b",63.8,"UklGRnzeAABXQVZFZm10IBAAAAABAAEA4FsAAMC3AAACABAAZ
   }
 
   // ---- Synthetische Pops und Bangs (gezielt gewünscht, da das Video selbst keine enthält) ----
-  var popBus = null, dampLp = null, noiseBuf = null;
+  var popBus = null, dampLp = null, noiseBuf = null, outBus = null, popOut = null;
   function buildPopChain() {
     popBus = ctx.createGain(); popBus.gain.value = 1;
     dampLp = ctx.createBiquadFilter();
-    dampLp.type = "lowpass"; dampLp.frequency.value = 1100; dampLp.Q.value = 0.4;
-    popBus.connect(dampLp); dampLp.connect(master);
+    dampLp.type = "lowpass"; dampLp.frequency.value = 2800; dampLp.Q.value = 0.5;
+    popOut = ctx.createGain(); popOut.gain.value = +$("vol").value / 100;
+    popBus.connect(dampLp); dampLp.connect(popOut); popOut.connect(outBus);
     var n = ctx.sampleRate * 1.0, buf = ctx.createBuffer(1, n, ctx.sampleRate), d = buf.getChannelData(0);
     for (var i = 0; i < n; i++) d[i] = Math.random() * 2 - 1;
     noiseBuf = buf;
@@ -386,21 +395,24 @@ var EMBED = {clips:[["b",63.8,"UklGRnzeAABXQVZFZm10IBAAAAABAAEA4FsAAMC3AAACABAAZ
     var t = ctx.currentTime, amt = +$("popAmt").value / 100;
     if (amt <= 0.01) return;
     strength *= amt;
-    thump(t, 0.35 * strength, 0.14, 95, 42);
-    crackle(t + 0.004, 0.5 * strength, 0.22 + Math.random() * 0.08, 1400, 3200);
-    if (Math.random() < 0.5) crackle(t + 0.05 + Math.random() * 0.05, 0.25 * strength, 0.12, 2000, 4200);
+    duck = Math.min(duck, 1 - 0.55 * Math.min(1, strength));   // Motor kurz zurücknehmen, wie bei der Zündunterbrechung
+    thump(t, 1.4 * strength, 0.14, 110, 45);
+    crackle(t + 0.004, 1.9 * strength, 0.2 + Math.random() * 0.08, 1300, 3200);
+    if (Math.random() < 0.6) crackle(t + 0.04 + Math.random() * 0.05, 1.0 * strength, 0.12, 1800, 4200);
   }
   function playBang(strength) {
     if (!ctx || !popsOn) return;
     var t = ctx.currentTime, amt = +$("popAmt").value / 100;
     if (amt <= 0.01) return;
     strength *= amt;
-    thump(t, 0.55 * strength, 0.22, 65, 28);
-    crackle(t + 0.002, 0.7 * strength, 0.3, 1200, 3000);
-    crackle(t + 0.03, 0.4 * strength, 0.2, 1800, 3800);
-    if (Math.random() < 0.7) crackle(t + 0.09, 0.3 * strength, 0.16, 1500, 3200);
+    duck = Math.min(duck, 1 - 0.7 * Math.min(1, strength));
+    thump(t, 1.9 * strength, 0.22, 80, 30);
+    crackle(t + 0.002, 2.2 * strength, 0.3, 1100, 3000);
+    crackle(t + 0.03, 1.4 * strength, 0.2, 1700, 3800);
+    if (Math.random() < 0.7) crackle(t + 0.09, 1.0 * strength, 0.16, 1400, 3200);
   }
   var popCool = 0, popQueue = [];
+  var lastHighLoad = -1e9, overrunArmed = false, liftUntil = 0;
   function queuePopBurst(strength, count) {
     var tt = performance.now();
     for (var i = 0; i < count; i++) popQueue.push({ at: tt + i * (90 + Math.random() * 90), s: strength * (1 - i * 0.22) });
@@ -791,11 +803,21 @@ var EMBED = {clips:[["b",63.8,"UklGRnzeAABXQVZFZm10IBAAAAABAAEA4FsAAMC3AAACABAAZ
       }
     }
     // Überrun: Gas wird bei hoher Drehzahl weggenommen -> Pop-Serie aus dem Auspuff
-    if (running && now > popCool && state.rpm > 2500) {
-      if (prevLoad > 0.5 && target.load < 0.2) {
-        popCool = now + 650;
-        queuePopBurst(0.4 + 0.6 * Math.min(1, (state.rpm - 2500) / 4000), 1 + Math.floor(Math.random() * 3));
-      }
+    // Ausgelöst wird, wenn innerhalb von 0,8 s von über 50 % auf unter 20 % Gas gegangen wird.
+    // So klappt es auch, wenn der Regler über mehrere Frames gezogen wird (nicht nur bei einem Sprung).
+    if (target.load > 0.5) { lastHighLoad = now; overrunArmed = true; }
+    if (running && popsOn && overrunArmed && now > popCool && state.rpm > 2500 &&
+        target.load < 0.2 && now - lastHighLoad < 800) {
+      overrunArmed = false;
+      popCool = now + 650;
+      liftUntil = now + 2500;
+      queuePopBurst(0.5 + 0.5 * Math.min(1, (state.rpm - 2500) / 4000), 2 + Math.floor(Math.random() * 3));
+    }
+    // Schubknistern: solange nach dem Gaswegnehmen kein Gas gegeben wird, knallt es noch eine Weile unregelmäßig
+    if (target.load >= 0.2) liftUntil = 0;
+    if (running && popsOn && now < liftUntil && state.rpm > 1800 && !popQueue.length) {
+      var rate = 2 + 6 * Math.min(1, (state.rpm - 1800) / 4500);
+      if (Math.random() < rate * dt) playPop(0.45 + Math.random() * 0.5);
     }
     prevLoad = target.load;
     updateSamples(dt);
@@ -1045,6 +1067,7 @@ var EMBED = {clips:[["b",63.8,"UklGRnzeAABXQVZFZm10IBAAAAABAAEA4FsAAMC3AAACABAAZ
   $("load").addEventListener("input", function (e) { stopDemo(); target.load = +e.target.value / 100; });
   $("vol").addEventListener("input", function (e) {
     if (master) master.gain.setTargetAtTime(+e.target.value / 100, ctx.currentTime, 0.02);
+    if (popOut) popOut.gain.setTargetAtTime(+e.target.value / 100, ctx.currentTime, 0.02);
   });
   (function () {
     var btns = document.querySelectorAll("#engineSel button");

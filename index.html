@@ -286,7 +286,7 @@ input[type=range]:disabled { opacity: 0.6; }
       </div>
     </div>
     <p class="hint"><b>V6, V8 und V10</b> werden live erzeugt: Jeder Zylinder zündet einzeln in der echten Zündreihenfolge, danach formt eine nachgebildete Auspuffanlage den Ton. Der V6 klingt rau und kernig, der V8 blubbert tief und unregelmäßig, der V10 klingt hell und kreischend.</p>
-    <p class="hint"><b>Turbo:</b> Das Pfeifen kommt mit etwas Verzögerung (Turboloch) und steigt mit dem Ladedruck. Sobald der Ladedruck fällt, bläst das Ventil ab und der Lader flattert („tu-tu-tu“). <b>Kompressor:</b> Das Heulen hängt direkt an der Drehzahl und kommt sofort, ohne Verzögerung.</p>
+    <p class="hint"><b>Turbo:</b> Das Pfeifen kommt mit etwas Verzögerung (Turboloch) und steigt mit dem Ladedruck. Sobald der Ladedruck fällt, bläst das Ventil ab und der Lader flattert („tschuiii … tschuiii“). <b>Kompressor:</b> Das Heulen hängt direkt an der Drehzahl und kommt sofort, ohne Verzögerung.</p>
     <p class="hint">Pops und Bangs gibt es bei jedem Motor, jeweils mit eigenem Klang: beim Gaswegnehmen bei hoher Drehzahl und beim Hochschalten. Beim Bremsen knallt es dichter, beim Runterschalten (Drehzahl springt ohne Gas hoch) gibt es einen Bang mit einer ganzen Salve Pops. Mit dem Schalter oben schaltest du sie ganz ab.</p>
   </section>
 </main>
@@ -672,35 +672,57 @@ input[type=range]:disabled { opacity: 0.6; }
   }
 
   function playFlutter(strength, f) {
-    // Turbo-Flattern ("tu-tu-tu-tu"): Die Luft staut sich am Verdichterrad und schlägt in immer langsameren,
-    // leiser werdenden Stößen zurück. Das Laderpfeifen stottert dabei mit und fällt in der Tonhöhe ab.
+    // Turbo-Flattern als "tschuiii ... tschuiii": wenige, lange Stöße, jeder ein Luftstoß ("tsch")
+    // mit anschließendem, von tief nach hoch gleitendem Pfeifen ("uiii"). Jeder Stoß kommt etwas später,
+    // ist leiser und etwas tiefer als der vorige.
     if (!ctx || !chg || strength < 0.05) return;
-    var t0 = ctx.currentTime + 0.03;
-    var n = 6 + Math.round(5 * Math.min(1, strength));        // 6 bis 11 Stöße
-    var s = ctx.createBufferSource(); s.buffer = chg.nbuf;
-    var bp = ctx.createBiquadFilter(); bp.type = "bandpass"; bp.Q.value = 1.3;
-    var g = ctx.createGain();
-    var o = ctx.createOscillator(); o.type = "triangle";
-    var og = ctx.createGain();
-    bp.frequency.setValueAtTime(1100, t0);
-    o.frequency.setValueAtTime(Math.max(300, f * 0.75), t0);
-    var t = t0, iv = 0.03, a = 1;
+    var t = ctx.currentTime + 0.04;
+    var n = 2 + Math.round(2 * Math.min(1, strength));          // 2 bis 4 Stöße
+    var top = Math.min(3000, Math.max(1700, f * 0.9));
+    var iv = 0.23, a = 1;
     for (var k = 0; k < n; k++) {
-      g.gain.setValueAtTime(0.0001, t);
-      g.gain.linearRampToValueAtTime(2.2 * strength * a, t + 0.003);
-      g.gain.setTargetAtTime(0.0001, t + 0.004, iv * 0.28);
-      og.gain.setValueAtTime(0.0001, t);
-      og.gain.linearRampToValueAtTime(0.5 * strength * a, t + 0.003);
-      og.gain.setTargetAtTime(0.0001, t + 0.004, iv * 0.3);
-      t += iv; iv *= 1.13; a *= 0.84;
+      tschui(t, strength * a, top);
+      t += iv; iv *= 1.18; a *= 0.74; top *= 0.86;
     }
-    var end = t + 0.05;
-    bp.frequency.exponentialRampToValueAtTime(480, end);
-    o.frequency.exponentialRampToValueAtTime(Math.max(150, f * 0.3), end);
-    s.connect(bp); bp.connect(g); g.connect(chg.bus);
+  }
+  function tschui(t, s, top) {
+    // "tsch": kurzer, heller Luftstoß
+    var ns = ctx.createBufferSource(); ns.buffer = chg.nbuf;
+    var hp = ctx.createBiquadFilter(); hp.type = "highpass"; hp.frequency.value = 1000;
+    var bp = ctx.createBiquadFilter(); bp.type = "bandpass"; bp.Q.value = 0.8;
+    bp.frequency.setValueAtTime(2600, t);
+    bp.frequency.exponentialRampToValueAtTime(1700, t + 0.06);
+    var g = ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(1.6 * s, t + 0.006);
+    g.gain.setTargetAtTime(0.0001, t + 0.02, 0.025);
+    ns.connect(hp); hp.connect(bp); bp.connect(g); g.connect(chg.bus);
+    ns.start(t, Math.random() * 1.5); ns.stop(t + 0.16);
+    // "uiii": Pfeifton gleitet von tief nach hoch, hält kurz und klingt aus
+    var t1 = t + 0.015, up = t + 0.11, end = t + 0.2;
+    var o = ctx.createOscillator(); o.type = "triangle";
+    o.frequency.setValueAtTime(top * 0.35, t1);
+    o.frequency.exponentialRampToValueAtTime(top, up);
+    o.frequency.exponentialRampToValueAtTime(top * 0.92, end);
+    var og = ctx.createGain();
+    og.gain.setValueAtTime(0.0001, t1);
+    og.gain.exponentialRampToValueAtTime(0.55 * s, t + 0.05);
+    og.gain.linearRampToValueAtTime(0.45 * s, t + 0.13);
+    og.gain.setTargetAtTime(0.0001, t + 0.13, 0.028);
     o.connect(og); og.connect(chg.bus);
-    s.start(t0, Math.random()); s.stop(end + 0.1);
-    o.start(t0); o.stop(end + 0.1);
+    o.start(t1); o.stop(t + 0.34);
+    // Luft, die mit dem Pfeifen mitläuft: macht das "uiii" hauchig statt piepsig
+    var ns2 = ctx.createBufferSource(); ns2.buffer = chg.nbuf;
+    var bp2 = ctx.createBiquadFilter(); bp2.type = "bandpass"; bp2.Q.value = 5;
+    bp2.frequency.setValueAtTime(top * 0.35, t1);
+    bp2.frequency.exponentialRampToValueAtTime(top, up);
+    bp2.frequency.exponentialRampToValueAtTime(top * 0.92, end);
+    var g2 = ctx.createGain();
+    g2.gain.setValueAtTime(0.0001, t1);
+    g2.gain.exponentialRampToValueAtTime(1.4 * s, t + 0.05);
+    g2.gain.setTargetAtTime(0.0001, t + 0.13, 0.03);
+    ns2.connect(bp2); bp2.connect(g2); g2.connect(chg.bus);
+    ns2.start(t1, Math.random() * 1.5); ns2.stop(t + 0.34);
   }
 
   function updateCharger(t, dt, L) {
@@ -716,7 +738,7 @@ input[type=range]:disabled { opacity: 0.6; }
     if (target.load > 0.5) bovArmed = true;
     if (turbo && bovArmed && boost > 0.25 && (target.load < 0.25 || loadHi - target.load > 0.45)) {
       bovArmed = false;
-      playBOV(boost * ca * 0.6);
+      playBOV(boost * ca * 0.15);               // nur noch leise, damit das Tschuiii klar vorne steht
       playFlutter(boost * ca, whistleF);
       boost *= 0.2;                               // Druck ist abgeblasen
       loadHi = target.load;

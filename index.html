@@ -340,7 +340,18 @@ input[type=range]:disabled { opacity: 0.6; }
     limiter.attack.value = 0.002; limiter.release.value = 0.12;
     comp.connect(outBus);
     outBus.connect(limiter);
-    limiter.connect(ctx.destination);
+    // Ganz am Ende ein weicher Begrenzer: alles unter 0,85 bleibt unverändert, nur kurze Spitzen
+    // (z. B. Knaller, die schneller sind als der Limiter) werden sanft auf knapp unter 1,0 gerundet.
+    var clipIn = ctx.createGain(); clipIn.gain.value = 1 / 1.5;
+    var clip = ctx.createWaveShaper();
+    var cc = new Float32Array(2048);
+    for (var ci = 0; ci < 2048; ci++) {
+      var cx = (ci / 1023.5 - 1) * 1.5, ax = Math.abs(cx);
+      var cy = ax < 0.85 ? ax : 0.85 + 0.14 * Math.tanh((ax - 0.85) / 0.14);
+      cc[ci] = cx < 0 ? -cy : cy;
+    }
+    clip.curve = cc; clip.oversample = "4x";
+    limiter.connect(clipIn); clipIn.connect(clip); clip.connect(ctx.destination);
     buildPopChain();
     buildSynth();
     buildCharger();
@@ -349,11 +360,14 @@ input[type=range]:disabled { opacity: 0.6; }
   // ---- Synthetische Pops und Bangs, Klangfarbe je Motor (ENGINES[...].pop) ----
   var popBus = null, dampLp = null, noiseBuf = null, outBus = null, popOut = null;
   function buildPopChain() {
-    popBus = ctx.createGain(); popBus.gain.value = 1;
+    popBus = ctx.createGain(); popBus.gain.value = 0.85;   // etwas Reserve, damit kurze Knaller nicht übersteuern
+    // Satter statt blechern: Tiefen um 250 Hz anheben, Höhen schon ab etwa 2,2 kHz weich abrunden
+    var popBody = ctx.createBiquadFilter();
+    popBody.type = "lowshelf"; popBody.frequency.value = 250; popBody.gain.value = 6;
     dampLp = ctx.createBiquadFilter();
-    dampLp.type = "lowpass"; dampLp.frequency.value = 2800; dampLp.Q.value = 0.5;
+    dampLp.type = "lowpass"; dampLp.frequency.value = 2200; dampLp.Q.value = 0.5;
     popOut = ctx.createGain(); popOut.gain.value = +$("vol").value / 100;
-    popBus.connect(dampLp); dampLp.connect(popOut); popOut.connect(outBus);
+    popBus.connect(popBody); popBody.connect(dampLp); dampLp.connect(popOut); popOut.connect(outBus);
     var n = ctx.sampleRate * 1.0, buf = ctx.createBuffer(1, n, ctx.sampleRate), d = buf.getChannelData(0);
     for (var i = 0; i < n; i++) d[i] = Math.random() * 2 - 1;
     noiseBuf = buf;
@@ -361,12 +375,23 @@ input[type=range]:disabled { opacity: 0.6; }
   function crackle(t, amt, dur, fLo, fHi) {
     var s = ctx.createBufferSource();
     s.buffer = noiseBuf;
-    var bp = ctx.createBiquadFilter(); bp.type = "bandpass"; bp.frequency.value = fLo + Math.random() * (fHi - fLo); bp.Q.value = 1.1;
-    var hp = ctx.createBiquadFilter(); hp.type = "highpass"; hp.frequency.value = 500;
+    var bp = ctx.createBiquadFilter(); bp.type = "bandpass"; bp.frequency.value = fLo + Math.random() * (fHi - fLo); bp.Q.value = 0.75;
+    var hp = ctx.createBiquadFilter(); hp.type = "highpass"; hp.frequency.value = 180;
     var g = ctx.createGain(); g.gain.setValueAtTime(0.0001, t);
     g.gain.exponentialRampToValueAtTime(Math.max(0.01, amt), t + 0.006);
     g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
     s.connect(bp); bp.connect(hp); hp.connect(g); g.connect(popBus);
+    var off = Math.random() * (noiseBuf.duration - dur - 0.05);
+    s.start(t, off); s.stop(t + dur + 0.02);
+  }
+  function boom(t, amt, dur, fc) {
+    var s = ctx.createBufferSource();
+    s.buffer = noiseBuf;
+    var lp = ctx.createBiquadFilter(); lp.type = "lowpass"; lp.frequency.value = fc; lp.Q.value = 0.8;
+    var g = ctx.createGain(); g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(Math.max(0.01, amt), t + 0.003);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    s.connect(lp); lp.connect(g); g.connect(popBus);
     var off = Math.random() * (noiseBuf.duration - dur - 0.05);
     s.start(t, off); s.stop(t + dur + 0.02);
   }
@@ -387,9 +412,11 @@ input[type=range]:disabled { opacity: 0.6; }
     strength *= amt;
     var p = popTone();
     duck = Math.min(duck, 1 - 0.55 * Math.min(1, strength));   // Motor kurz zurücknehmen, wie bei der Zündunterbrechung
-    thump(t, 1.4 * p.thumpGain * strength, 0.14 * p.len, p.thump[0], p.thump[1]);
-    crackle(t + 0.004, 1.9 * p.crackGain * strength, (0.2 + Math.random() * 0.08) * p.len, p.crack[0], p.crack[1]);
-    if (Math.random() < p.extra) crackle(t + 0.04 + Math.random() * 0.05, 1.0 * p.crackGain * strength, 0.12 * p.len, p.crack[0] * 1.3, p.crack[1] * 1.3);
+    thump(t, 1.4 * p.thumpGain * strength, 0.14 * p.len, p.thump[0], p.thump[1]);      // tiefer Schlag
+    thump(t, 0.9 * p.thumpGain * strength, 0.07 * p.len, p.punch[0], p.punch[1]);      // Punch, auch am Handy hörbar
+    boom(t + 0.002, 1.7 * strength, 0.09 * p.len, p.boom);                             // satter Körper
+    crackle(t + 0.006, 1.3 * p.crackGain * strength, (0.18 + Math.random() * 0.08) * p.len, p.crack[0], p.crack[1]);
+    if (Math.random() < p.extra) crackle(t + 0.04 + Math.random() * 0.05, 0.7 * p.crackGain * strength, 0.12 * p.len, p.crack[0] * 1.2, p.crack[1] * 1.2);
   }
   function playBang(strength) {
     if (!ctx || !popsOn) return;
@@ -399,9 +426,11 @@ input[type=range]:disabled { opacity: 0.6; }
     var p = popTone();
     duck = Math.min(duck, 1 - 0.7 * Math.min(1, strength));
     thump(t, 1.9 * p.thumpGain * strength, 0.22 * p.len, p.thump[0] * 0.72, p.thump[1] * 0.68);
-    crackle(t + 0.002, 2.2 * p.crackGain * strength, 0.3 * p.len, p.crack[0] * 0.85, p.crack[1] * 0.95);
-    crackle(t + 0.03, 1.4 * p.crackGain * strength, 0.2 * p.len, p.crack[0] * 1.3, p.crack[1] * 1.2);
-    if (Math.random() < p.extra + 0.1) crackle(t + 0.09, 1.0 * p.crackGain * strength, 0.16 * p.len, p.crack[0], p.crack[1]);
+    thump(t, 1.1 * p.thumpGain * strength, 0.1 * p.len, p.punch[0] * 0.85, p.punch[1] * 0.8);
+    boom(t + 0.002, 2.3 * strength, 0.15 * p.len, p.boom * 0.85);
+    crackle(t + 0.004, 1.6 * p.crackGain * strength, 0.28 * p.len, p.crack[0] * 0.85, p.crack[1] * 0.95);
+    crackle(t + 0.03, 1.0 * p.crackGain * strength, 0.2 * p.len, p.crack[0] * 1.15, p.crack[1] * 1.1);
+    if (Math.random() < p.extra + 0.1) crackle(t + 0.09, 0.7 * p.crackGain * strength, 0.16 * p.len, p.crack[0], p.crack[1]);
   }
   function popTone() { var e = ENGINES[engine] || ENGINES.v8; return e.pop; }
   var popCool = 0, popQueue = [];
@@ -428,21 +457,21 @@ input[type=range]:disabled { opacity: 0.6; }
       amps: [1, 0.87, 0.95, 0.84, 0.98, 0.9], tau: 2.8, noise: 0.26,
       lpBase: 520, lpLoad: 1300, lpRpm: 0.28, drive: 3.0,
       pk1: [125, 5], pk2: [520, 5], pipe: 5.2, fb: 0.34, gain: 0.8,
-      pop: { thump: [135, 55], crack: [1700, 4200], thumpGain: 0.8, crackGain: 1.15, len: 0.85, extra: 0.8, rate: 1.25 }
+      pop: { thump: [135, 55], punch: [260, 110], boom: 750, crack: [1000, 2600], thumpGain: 0.8, crackGain: 1.15, len: 0.85, extra: 0.8, rate: 1.25 }
     },
     v8: {
       name: "V8", cyl: 8, banks: [0, 1, 1, 0, 1, 0, 0, 1], bankDelay: 0.0011,
       amps: [1, 0.84, 0.95, 0.8, 1, 0.9, 0.86, 0.97], tau: 3.4, noise: 0.18,
       lpBase: 380, lpLoad: 900, lpRpm: 0.13, drive: 2.2,
       pk1: [95, 6], pk2: [310, 3], pipe: 6.5, fb: 0.32, gain: 0.75,
-      pop: { thump: [110, 45], crack: [1300, 3200], thumpGain: 1, crackGain: 1, len: 1, extra: 0.6, rate: 1 }
+      pop: { thump: [110, 45], punch: [210, 85], boom: 550, crack: [700, 1900], thumpGain: 1, crackGain: 1, len: 1, extra: 0.6, rate: 1 }
     },
     v10: {
       name: "V10", cyl: 10, banks: [0, 1, 0, 1, 0, 1, 0, 1, 0, 1], bankDelay: 0.0004,
       amps: [1, 0.93, 0.97, 0.9, 1, 0.95, 0.92, 0.98, 0.96, 0.94], tau: 2.3, noise: 0.22,
       lpBase: 750, lpLoad: 1300, lpRpm: 0.3, drive: 2.6,
       pk1: [170, 4], pk2: [720, 5], pipe: 4.2, fb: 0.3, gain: 0.7,
-      pop: { thump: [145, 60], crack: [2000, 4800], thumpGain: 0.75, crackGain: 1.2, len: 0.75, extra: 0.85, rate: 1.3 }
+      pop: { thump: [145, 60], punch: [280, 120], boom: 900, crack: [1200, 3000], thumpGain: 0.75, crackGain: 1.2, len: 0.75, extra: 0.85, rate: 1.3 }
     }
   };
   var ENGINE_KEY = "motorsound.engine", POPS_KEY = "motorsound.pops", CHARGE_KEY = "motorsound.charger";
